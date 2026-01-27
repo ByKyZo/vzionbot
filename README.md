@@ -16,7 +16,22 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
 </p>
 
-**Clawdbot** is a *personal AI assistant* you run on your own devices.
+---
+
+> [!NOTE]
+> ## VZion Fork
+>
+> This is a stabilized fork of [Moltbot](https://github.com/clawdbot/clawdbot) (formerly Clawdbot).
+>
+> **Changes from upstream:**
+> - Fixed `.dockerignore` excluding `apps/` and `vendor/` (broke Docker build)
+>
+> **Upstream:** https://github.com/clawdbot/clawdbot
+> **Docs:** https://docs.molt.bot
+
+---
+
+**Moltbot** (formerly Clawdbot) is a *personal AI assistant* you run on your own devices.
 It answers you on the channels you already use (WhatsApp, Telegram, Slack, Discord, Google Chat, Signal, iMessage, Microsoft Teams, WebChat), plus extension channels like BlueBubbles, Matrix, Zalo, and Zalo Personal. It can speak and listen on macOS/iOS/Android, and can render a live Canvas you control. The Gateway is just the control plane — the product is the assistant.
 
 If you want a personal, single-user assistant that feels local, fast, and always-on, this is it.

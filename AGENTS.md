@@ -1,5 +1,7 @@
+> **VZion Fork** - See README.md for fork-specific changes
+
 # Repository Guidelines
-- Repo: https://github.com/moltbot/moltbot
+- Repo: https://github.com/moltbot/moltbot (upstream)
 - GitHub issues/comments/PR comments: use literal multiline strings or `-F - <<'EOF'` (or $'...') for real newlines; never embed "\\n".
 
 ## Project Structure & Module Organization
