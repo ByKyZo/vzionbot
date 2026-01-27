@@ -39,10 +39,9 @@ apps/ios/build
 **/*.trace
 
 # large app trees not needed for CLI build
-apps/
+# NOTE: apps/ and vendor/ removed - required for Docker build (VZion fix)
 assets/
 Peekaboo/
 Swabble/
 Core/
 Users/
-vendor/
