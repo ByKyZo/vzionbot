@@ -39,7 +39,7 @@ const brainGuardPlugin = {
       });
 
       if (prompt) {
-        return { prependContext: prompt };
+        return { systemPrompt: prompt };
       }
     });
 

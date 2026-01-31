@@ -1,6 +1,6 @@
 import { Type } from "@sinclair/typebox";
 import { recordPattern, getHistory } from "./storage.js";
-import type { PatternType, HistoryResult } from "./types.js";
+import type { PatternType, HistoryResult, PreviousMessage } from "./types.js";
 
 const PATTERN_TYPES = [
   "delegation",
@@ -24,18 +24,45 @@ function optionalStringEnum<T extends readonly string[]>(values: T) {
   return Type.Optional(stringEnum(values));
 }
 
+const PreviousMessageSchema = Type.Object({
+  id: Type.String({ description: "Message identifier" }),
+  text: Type.String({ description: "Message content. Copy exact text, do not paraphrase." }),
+});
+
 export const brainGuardSchema = Type.Object({
-  action: stringEnum(ACTION_TYPES),
-  pattern: optionalStringEnum(PATTERN_TYPES),
-  message: Type.Optional(Type.String()),
-  context: Type.Optional(Type.String()),
-  days: Type.Optional(Type.Number()),
+  action: Type.Unsafe<"record" | "history">({
+    type: "string",
+    enum: ["record", "history"],
+    description: "Action to perform: record a pattern or query history",
+  }),
+  pattern: Type.Optional(Type.Unsafe<PatternType>({
+    type: "string",
+    enum: [...PATTERN_TYPES],
+    description: "Cognitive pattern type to record or filter",
+  })),
+  message: Type.Optional(Type.String({
+    description: "The exact user message that shows the pattern. Copy verbatim, do not paraphrase.",
+  })),
+  messageId: Type.Optional(Type.String({
+    description: "Unique identifier of the message",
+  })),
+  previousMessages: Type.Optional(Type.Array(PreviousMessageSchema, {
+    description: "Array of previous messages for context. Copy exact message text, do not paraphrase.",
+  })),
+  context: Type.Optional(Type.String({
+    description: "AI-generated summary of the conversation context",
+  })),
+  days: Type.Optional(Type.Number({
+    description: "Number of days to look back in history (default: 7)",
+  })),
 });
 
 export type BrainGuardParams = {
   action: "record" | "history";
   pattern?: PatternType;
   message?: string;
+  messageId?: string;
+  previousMessages?: PreviousMessage[];
   context?: string;
   days?: number;
 };
@@ -43,7 +70,7 @@ export type BrainGuardParams = {
 export function handleBrainGuardTool(
   params: BrainGuardParams,
   ctx: { sessionKey?: string },
-): { success: boolean; data?: HistoryResult; error?: string } {
+): { success: boolean; count?: number; entries?: HistoryResult["entries"]; data?: HistoryResult; error?: string } {
   try {
     if (params.action === "record") {
       if (!params.pattern) {
@@ -56,11 +83,23 @@ export function handleBrainGuardTool(
       recordPattern({
         patternType: params.pattern,
         message: params.message,
+        messageId: params.messageId,
+        previousMessages: params.previousMessages,
         context: params.context,
         sessionKey: ctx.sessionKey,
       });
 
-      return { success: true };
+      // Return history automatically
+      const result = getHistory({
+        patternType: params.pattern,
+        days: params.days ?? 7,
+      });
+
+      return {
+        success: true,
+        count: result.summary.count,
+        entries: result.entries,
+      };
     }
 
     if (params.action === "history") {

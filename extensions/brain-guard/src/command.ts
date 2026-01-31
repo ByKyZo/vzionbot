@@ -13,7 +13,7 @@ export function handleBrainCommand(args?: string): { text: string } {
   const result = getHistory({ days });
 
   if (result.entries.length === 0) {
-    return { text: `🧠 BrainGuard - ${days} derniers jours\n\nAucun pattern détecté. 🎉` };
+    return { text: `🧠 BrainGuard - last ${days} days\n\nNo pattern detected. 🎉` };
   }
 
   // Group by pattern type
@@ -23,7 +23,7 @@ export function handleBrainCommand(args?: string): { text: string } {
   }
 
   // Build summary
-  const lines: string[] = [`🧠 BrainGuard - ${days} derniers jours\n`];
+  const lines: string[] = [`🧠 BrainGuard - last ${days} days\n`];
 
   for (const [pattern, count] of byType.entries()) {
     const patternHistory = getHistory({ patternType: pattern, days });
@@ -32,7 +32,7 @@ export function handleBrainCommand(args?: string): { text: string } {
   }
 
   // Recent entries
-  lines.push("\nDerniers patterns:");
+  lines.push("\nRecent patterns:");
   for (const entry of result.entries.slice(0, 5)) {
     const date = new Date(entry.date);
     const ago = getTimeAgo(date);
@@ -50,7 +50,7 @@ function getTimeAgo(date: Date): string {
   const diffHours = Math.floor(diffMs / 3600000);
   const diffDays = Math.floor(diffMs / 86400000);
 
-  if (diffMins < 60) return `il y a ${diffMins}m`;
-  if (diffHours < 24) return `il y a ${diffHours}h`;
-  return `il y a ${diffDays}j`;
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  return `${diffDays}d ago`;
 }

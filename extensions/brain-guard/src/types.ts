@@ -7,11 +7,18 @@ export type PatternType =
 
 export type Trend = "up" | "down" | "stable";
 
+export interface PreviousMessage {
+  id: string;
+  text: string;
+}
+
 export interface PatternEntry {
   id: number;
   timestamp: string;
   patternType: PatternType;
   message: string;
+  messageId: string | null;
+  previousMessages: PreviousMessage[] | null;
   context: string | null;
   sessionKey: string | null;
 }
@@ -27,5 +34,8 @@ export interface HistoryResult {
     date: string;
     pattern: PatternType;
     message: string;
+    messageId: string | null;
+    previousMessages: PreviousMessage[] | null;
+    context: string | null;
   }>;
 }
