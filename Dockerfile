@@ -21,6 +21,9 @@ COPY ui/package.json ./ui/package.json
 COPY patches ./patches
 COPY scripts ./scripts
 
+# Copier les extensions pour que pnpm installe leurs dépendances
+COPY extensions/ ./extensions/
+
 RUN pnpm install --frozen-lockfile
 
 COPY . .
