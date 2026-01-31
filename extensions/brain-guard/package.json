@@ -1,0 +1,19 @@
+{
+  "name": "@openclaw/brain-guard",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Cognitive health monitor - preserve mental autonomy",
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.1.26"
+  },
+  "devDependencies": {
+    "openclaw": "workspace:*",
+    "@types/better-sqlite3": "^7.6.11"
+  }
+}
