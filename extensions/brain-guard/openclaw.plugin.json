@@ -1,0 +1,16 @@
+{
+  "id": "brain-guard",
+  "name": "BrainGuard",
+  "description": "Cognitive health monitor - preserve mental autonomy",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "enabled": { "type": "boolean", "default": true },
+      "reminderInterval": {
+        "type": "number",
+        "default": 10,
+        "description": "Inject reminder every N messages"
+      }
+    }
+  }
+}
