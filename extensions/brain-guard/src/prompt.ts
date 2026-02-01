@@ -1,4 +1,4 @@
-const INITIAL_PROMPT = `## BrainGuard - Cognitive Health Monitor
+const INITIAL_PROMPT_BASE = `## BrainGuard - Cognitive Health Monitor
 
 You have access to the \`brain_guard\` tool to preserve user's cognitive autonomy.
 
@@ -38,10 +38,36 @@ If count > 2 and recurring → prefer guiding over doing.
 - Recurring pattern: suggest guided approach
 - Never judge, never block`;
 
+const EMBEDDING_AVAILABLE_NOTE = `
+
+### Semantic search
+Embeddings are enabled. You can use \`action: "search"\` with \`query\` for semantic search across past patterns.`;
+
+const EMBEDDING_UNAVAILABLE_NOTE = `
+
+### ⚠️ Limited features
+**Semantic search is disabled** - no embedding API key configured.
+- \`action: "search"\` works only with \`type\` or \`days\` filters (exact match)
+- \`query\` parameter will return empty results
+- Similar patterns detection unavailable
+
+To enable: configure an OpenAI API key via \`openclaw models auth setup-token --provider openai\``;
+
+function buildInitialPrompt(embeddingAvailable: boolean): string {
+  return INITIAL_PROMPT_BASE + (embeddingAvailable ? EMBEDDING_AVAILABLE_NOTE : EMBEDDING_UNAVAILABLE_NOTE);
+}
+
 const REMINDER_PROMPT = `BrainGuard reminder: observe cognitive patterns (delegation, reflection, vocabulary, clarity). Use brain_guard tool if relevant.`;
 
 // Track message counts per session for periodic reminders
 const sessionMessageCounts = new Map<string, number>();
+
+// Cached embedding status
+let cachedEmbeddingAvailable: boolean = false;
+
+export function setEmbeddingAvailable(available: boolean): void {
+  cachedEmbeddingAvailable = available;
+}
 
 export function buildBrainGuardPrompt(ctx: {
   sessionKey?: string;
@@ -53,9 +79,9 @@ export function buildBrainGuardPrompt(ctx: {
   const count = sessionMessageCounts.get(sessionKey) ?? 0;
   sessionMessageCounts.set(sessionKey, count + 1);
 
-  // First message: inject full methodology
+  // First message: inject full methodology with embedding status
   if (count === 0) {
-    return INITIAL_PROMPT;
+    return buildInitialPrompt(cachedEmbeddingAvailable);
   }
 
   // Periodic reminder

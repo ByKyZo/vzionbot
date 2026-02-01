@@ -1,171 +1,296 @@
-import Database from "better-sqlite3";
+import { randomUUID } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
-import { mkdirSync, existsSync } from "fs";
-import type { PatternType, Trend, HistoryResult, PreviousMessage } from "./types.js";
+import { mkdirSync, existsSync, appendFileSync, readFileSync } from "fs";
+import OpenAI from "openai";
+import type {
+  PatternType,
+  HistoryResult,
+  PreviousMessage,
+  PatternRecord,
+  SearchResult,
+  SearchSummary,
+} from "./types.js";
 
-const DB_DIR = join(homedir(), "clawd", "brain-guard");
-const DB_PATH = join(DB_DIR, "brain-guard.db");
+const DATA_DIR = join(homedir(), "clawd", "brain-guard");
+const DATA_FILE = join(DATA_DIR, "patterns.jsonl");
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS patterns (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-  pattern_type TEXT NOT NULL,
-  message TEXT NOT NULL,
-  message_id TEXT,
-  previous_messages TEXT,
-  context TEXT,
-  session_key TEXT
-);
+// In-memory store for testing
+let inMemoryStore: PatternRecord[] | null = null;
 
-CREATE INDEX IF NOT EXISTS idx_patterns_timestamp ON patterns(timestamp);
-CREATE INDEX IF NOT EXISTS idx_patterns_type ON patterns(pattern_type);
-`;
+// OpenAI client cache
+let openaiClient: OpenAI | null = null;
+let embeddingAvailable: boolean | null = null; // null = not checked yet
 
-const MIGRATIONS = [
-  "ALTER TABLE patterns ADD COLUMN message_id TEXT",
-  "ALTER TABLE patterns ADD COLUMN previous_messages TEXT",
-];
+/**
+ * Initialize storage with options. Call before any other storage function.
+ * @param options.inMemory - Use in-memory storage (for testing)
+ */
+export function initStorage(options?: { inMemory?: boolean }): void {
+  if (options?.inMemory) {
+    inMemoryStore = [];
+  } else {
+    inMemoryStore = null;
+  }
+  openaiClient = null;
+}
 
-let db: Database.Database | null = null;
+export function closeStorage(): void {
+  inMemoryStore = null;
+  openaiClient = null;
+  embeddingAvailable = null;
+}
 
-export function getDb(): Database.Database {
-  if (db) return db;
-
-  if (!existsSync(DB_DIR)) {
-    mkdirSync(DB_DIR, { recursive: true });
+/**
+ * Check if embedding provider is available (has OPENAI_API_KEY configured).
+ * Caches the result after first check.
+ */
+export async function checkEmbeddingAvailable(): Promise<boolean> {
+  if (embeddingAvailable !== null) {
+    return embeddingAvailable;
   }
 
-  db = new Database(DB_PATH);
-  db.pragma("journal_mode = WAL");
-  db.exec(SCHEMA);
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    embeddingAvailable = false;
+    return false;
+  }
 
-  // Run migrations (ignore errors for already existing columns)
-  for (const migration of MIGRATIONS) {
-    try {
-      db.exec(migration);
-    } catch {
-      // Column already exists, ignore
+  try {
+    // Test with a simple query to verify it works
+    openaiClient = new OpenAI({ apiKey });
+    await openaiClient.embeddings.create({
+      model: "text-embedding-3-small",
+      input: "test",
+    });
+    embeddingAvailable = true;
+  } catch {
+    embeddingAvailable = false;
+    openaiClient = null;
+  }
+
+  return embeddingAvailable;
+}
+
+/**
+ * Get cached embedding availability status (sync, returns null if not checked yet)
+ */
+export function isEmbeddingAvailable(): boolean | null {
+  return embeddingAvailable;
+}
+
+function ensureDir(): void {
+  if (!inMemoryStore && !existsSync(DATA_DIR)) {
+    mkdirSync(DATA_DIR, { recursive: true });
+  }
+}
+
+async function getEmbedding(text: string): Promise<number[] | null> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    if (!openaiClient) {
+      openaiClient = new OpenAI({ apiKey });
     }
-  }
-
-  return db;
-}
-
-export function closeDb(): void {
-  if (db) {
-    db.close();
-    db = null;
+    const response = await openaiClient.embeddings.create({
+      model: "text-embedding-3-small",
+      input: text,
+    });
+    return response.data[0].embedding;
+  } catch {
+    return null; // API error or no key
   }
 }
 
-export function recordPattern(params: {
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0;
+  let dot = 0, magA = 0, magB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    magA += a[i] * a[i];
+    magB += b[i] * b[i];
+  }
+  const magnitude = Math.sqrt(magA) * Math.sqrt(magB);
+  return magnitude === 0 ? 0 : dot / magnitude;
+}
+
+export function loadRecords(): PatternRecord[] {
+  if (inMemoryStore) {
+    return inMemoryStore;
+  }
+
+  if (!existsSync(DATA_FILE)) {
+    return [];
+  }
+
+  const content = readFileSync(DATA_FILE, "utf-8");
+  return content
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as PatternRecord);
+}
+
+export async function findSimilar(
+  embedding: number[],
+  excludeId?: string,
+  limit: number = 5
+): Promise<Array<PatternRecord & { similarity: number }>> {
+  const records = loadRecords();
+
+  return records
+    .filter((r) => r.embedding && r.id !== excludeId)
+    .map((r) => ({
+      ...r,
+      similarity: cosineSimilarity(embedding, r.embedding!),
+    }))
+    .filter((r) => r.similarity > 0.5)
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, limit);
+}
+
+export async function recordPattern(params: {
   patternType: PatternType;
   message: string;
   messageId?: string;
   previousMessages?: PreviousMessage[];
   context?: string;
   sessionKey?: string;
-}): number {
-  const database = getDb();
-  const stmt = database.prepare(`
-    INSERT INTO patterns (pattern_type, message, message_id, previous_messages, context, session_key)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
+}): Promise<{ id: string; similar: Array<PatternRecord & { similarity: number }> }> {
+  ensureDir();
 
-  const result = stmt.run(
-    params.patternType,
-    params.message.slice(0, 1000),
-    params.messageId ?? null,
-    params.previousMessages ? JSON.stringify(params.previousMessages) : null,
-    params.context?.slice(0, 2000) ?? null,
-    params.sessionKey ?? null,
-  );
+  // Generate embedding
+  const embedding = await getEmbedding(params.message);
 
-  return result.lastInsertRowid as number;
-}
+  const record: PatternRecord = {
+    id: randomUUID(),
+    ts: new Date().toISOString(),
+    pattern: params.patternType,
+    message: params.message.slice(0, 1000),
+    messageId: params.messageId ?? null,
+    previousMessages: params.previousMessages ?? null,
+    context: params.context?.slice(0, 2000) ?? null,
+    sessionKey: params.sessionKey ?? null,
+    embedding,
+  };
 
-interface PatternRow {
-  id: number;
-  timestamp: string;
-  pattern_type: string;
-  message: string;
-  message_id: string | null;
-  previous_messages: string | null;
-  context: string | null;
-  session_key: string | null;
+  if (inMemoryStore) {
+    inMemoryStore.push(record);
+  } else {
+    appendFileSync(DATA_FILE, JSON.stringify(record) + "\n");
+  }
+
+  // Find similar patterns
+  const similar = embedding ? await findSimilar(embedding, record.id) : [];
+
+  return { id: record.id, similar };
 }
 
 export function getHistory(params: {
   patternType?: PatternType;
   days?: number;
 }): HistoryResult {
-  const database = getDb();
   const days = params.days ?? 7;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
 
-  // Get entries
-  const entriesStmt = params.patternType
-    ? database.prepare(`
-        SELECT * FROM patterns
-        WHERE pattern_type = ?
-        AND timestamp >= datetime('now', '-' || ? || ' days')
-        ORDER BY timestamp DESC
-      `)
-    : database.prepare(`
-        SELECT * FROM patterns
-        WHERE timestamp >= datetime('now', '-' || ? || ' days')
-        ORDER BY timestamp DESC
-      `);
+  const records = loadRecords();
 
-  const rows = params.patternType
-    ? (entriesStmt.all(params.patternType, days) as PatternRow[])
-    : (entriesStmt.all(days) as PatternRow[]);
+  // Filter by date and pattern
+  let entries = records.filter((r) => new Date(r.ts) >= cutoff);
+  if (params.patternType) {
+    entries = entries.filter((r) => r.pattern === params.patternType);
+  }
 
-  const entries = rows.map((row) => ({
-    date: row.timestamp,
-    pattern: row.pattern_type as PatternType,
-    message: row.message,
-    messageId: row.message_id,
-    previousMessages: row.previous_messages
-      ? (JSON.parse(row.previous_messages) as PreviousMessage[])
-      : null,
-    context: row.context,
-  }));
-
-  // Calculate trend
-  const trend = calculateTrend(params.patternType, days);
+  // Sort by date descending
+  entries.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
 
   return {
     summary: {
       count: entries.length,
-      trend,
     },
-    entries,
+    entries: entries.map((r) => ({
+      date: r.ts,
+      pattern: r.pattern,
+      message: r.message,
+      messageId: r.messageId,
+      previousMessages: r.previousMessages,
+      context: r.context,
+    })),
   };
 }
 
-function calculateTrend(patternType?: PatternType, days: number = 7): Trend {
-  const database = getDb();
+export async function searchRecords(params: {
+  query?: string;
+  type?: PatternType;
+  days?: number;
+}): Promise<{
+  results: SearchResult[];
+  summary: SearchSummary;
+}> {
+  const days = params.days ?? 30;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
 
-  const baseWhere = patternType
-    ? `WHERE pattern_type = '${patternType}'`
-    : "WHERE 1=1";
+  let records = loadRecords().filter((r) => new Date(r.ts) >= cutoff);
 
-  const stmt = database.prepare(`
-    SELECT
-      (SELECT COUNT(*) FROM patterns ${baseWhere}
-       AND timestamp >= datetime('now', '-${days} days')) as recent,
-      (SELECT COUNT(*) FROM patterns ${baseWhere}
-       AND timestamp >= datetime('now', '-${days * 2} days')
-       AND timestamp < datetime('now', '-${days} days')) as previous
-  `);
+  // Filter by type if specified
+  if (params.type) {
+    records = records.filter((r) => r.pattern === params.type);
+  }
 
-  const row = stmt.get() as { recent: number; previous: number };
+  // Calculate summary
+  const byType: Record<string, number> = {};
+  for (const r of records) {
+    byType[r.pattern] = (byType[r.pattern] || 0) + 1;
+  }
+  const summary: SearchSummary = {
+    total: records.length,
+    byType,
+  };
 
-  if (row.previous === 0) return "stable";
-  const ratio = row.recent / row.previous;
-  if (ratio > 1.3) return "up";
-  if (ratio < 0.7) return "down";
-  return "stable";
+  // If no query, return all matching records
+  if (!params.query) {
+    return {
+      results: records.map((r) => ({
+        date: r.ts,
+        pattern: r.pattern,
+        message: r.message,
+        matchType: "exact" as const,
+        messageId: r.messageId,
+        previousMessages: r.previousMessages,
+        context: r.context,
+      })),
+      summary,
+    };
+  }
+
+  // Semantic search
+  const queryVector = await getEmbedding(params.query);
+  if (!queryVector) {
+    return { results: [], summary: { total: 0, byType: {} } };
+  }
+
+  const scored = records
+    .filter((r) => r.embedding)
+    .map((r) => ({
+      ...r,
+      similarity: cosineSimilarity(queryVector, r.embedding!),
+    }))
+    .filter((r) => r.similarity > 0.5)
+    .sort((a, b) => b.similarity - a.similarity);
+
+  return {
+    results: scored.map((r) => ({
+      date: r.ts,
+      pattern: r.pattern,
+      message: r.message,
+      similarity: r.similarity,
+      matchType: "semantic" as const,
+      messageId: r.messageId,
+      previousMessages: r.previousMessages,
+      context: r.context,
+    })),
+    summary,
+  };
 }

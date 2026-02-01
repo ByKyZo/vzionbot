@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { recordPattern, getHistory } from "./storage.js";
+import { recordPattern, getHistory, searchRecords } from "./storage.js";
 import type { PatternType, HistoryResult, PreviousMessage } from "./types.js";
 
 const PATTERN_TYPES = [
@@ -10,67 +10,100 @@ const PATTERN_TYPES = [
   "clarity",
 ] as const;
 
-const ACTION_TYPES = ["record", "history"] as const;
-
-// Use Type.Unsafe with enum instead of Type.Union to avoid anyOf in schema
-function stringEnum<T extends readonly string[]>(values: T) {
-  return Type.Unsafe<T[number]>({
-    type: "string",
-    enum: [...values],
-  });
-}
-
-function optionalStringEnum<T extends readonly string[]>(values: T) {
-  return Type.Optional(stringEnum(values));
-}
-
 const PreviousMessageSchema = Type.Object({
   id: Type.String({ description: "Message identifier" }),
   text: Type.String({ description: "Message content. Copy exact text, do not paraphrase." }),
 });
 
 export const brainGuardSchema = Type.Object({
-  action: Type.Unsafe<"record" | "history">({
+  action: Type.Unsafe<"record" | "search">({
     type: "string",
-    enum: ["record", "history"],
-    description: "Action to perform: record a pattern or query history",
+    enum: ["record", "search"],
+    description: "record=record a pattern, search=search patterns",
   }),
+
+  // For record
   pattern: Type.Optional(Type.Unsafe<PatternType>({
     type: "string",
     enum: [...PATTERN_TYPES],
-    description: "Cognitive pattern type to record or filter",
+    description: "Pattern type (required for record)",
   })),
   message: Type.Optional(Type.String({
-    description: "The exact user message that shows the pattern. Copy verbatim, do not paraphrase.",
+    description: "User message showing the pattern (required for record)",
   })),
   messageId: Type.Optional(Type.String({
     description: "Unique identifier of the message",
   })),
   previousMessages: Type.Optional(Type.Array(PreviousMessageSchema, {
-    description: "Array of previous messages for context. Copy exact message text, do not paraphrase.",
+    description: "Array of previous messages for context",
   })),
   context: Type.Optional(Type.String({
     description: "AI-generated summary of the conversation context",
   })),
+
+  // For search
+  query: Type.Optional(Type.String({
+    description: "Semantic search query (for search action)",
+  })),
+  type: Type.Optional(Type.Unsafe<PatternType>({
+    type: "string",
+    enum: [...PATTERN_TYPES],
+    description: "Filter by pattern type (for search action)",
+  })),
   days: Type.Optional(Type.Number({
-    description: "Number of days to look back in history (default: 7)",
+    description: "Days to look back (default: 7 for record, 30 for search)",
   })),
 });
 
 export type BrainGuardParams = {
-  action: "record" | "history";
+  action: "record" | "search";
   pattern?: PatternType;
   message?: string;
   messageId?: string;
   previousMessages?: PreviousMessage[];
   context?: string;
+  query?: string;
+  type?: PatternType;
   days?: number;
 };
 
-export function handleBrainGuardTool(
+export type BrainGuardResult = {
+  success: boolean;
+  recorded?: {
+    id: string;
+    pattern: PatternType;
+    message: string;
+  };
+  byType?: {
+    count: number;
+    entries: Array<{ date: string; message: string }>;
+  };
+  similar?: Array<{
+    date: string;
+    pattern: PatternType;
+    message: string;
+    similarity: number;
+  }>;
+  results?: Array<{
+    date: string;
+    pattern: PatternType;
+    message: string;
+    similarity?: number;
+    matchType: "semantic" | "exact";
+  }>;
+  summary?: {
+    total: number;
+    byType: Record<string, number>;
+  };
+  error?: string;
+};
+
+export async function handleBrainGuardTool(
   params: BrainGuardParams,
   ctx: { sessionKey?: string },
-): { success: boolean; count?: number; entries?: HistoryResult["entries"]; data?: HistoryResult; error?: string } {
+): Promise<BrainGuardResult> {
+  console.log("[brain_guard] Called with:", JSON.stringify(params));
+
   try {
     if (params.action === "record") {
       if (!params.pattern) {
@@ -80,7 +113,7 @@ export function handleBrainGuardTool(
         return { success: false, error: "message is required for record action" };
       }
 
-      recordPattern({
+      const { id, similar } = await recordPattern({
         patternType: params.pattern,
         message: params.message,
         messageId: params.messageId,
@@ -89,30 +122,69 @@ export function handleBrainGuardTool(
         sessionKey: ctx.sessionKey,
       });
 
-      // Return history automatically
-      const result = getHistory({
+      // Get history for this pattern type
+      const history = getHistory({
         patternType: params.pattern,
         days: params.days ?? 7,
       });
 
-      return {
+      const result: BrainGuardResult = {
         success: true,
-        count: result.summary.count,
-        entries: result.entries,
+        recorded: {
+          id,
+          pattern: params.pattern,
+          message: params.message.slice(0, 100),
+        },
+        byType: {
+          count: history.summary.count,
+          entries: history.entries.slice(0, 5).map((e) => ({
+            date: e.date,
+            message: e.message.slice(0, 100),
+          })),
+        },
+        similar: similar.map((s) => ({
+          date: s.ts,
+          pattern: s.pattern,
+          message: s.message.slice(0, 100),
+          similarity: s.similarity,
+        })),
       };
+
+      console.log("[brain_guard] Record success");
+      return result;
     }
 
-    if (params.action === "history") {
-      const result = getHistory({
-        patternType: params.pattern,
-        days: params.days,
+    if (params.action === "search") {
+      // Require at least one filter
+      if (!params.query && !params.type && !params.days) {
+        return { success: false, error: "At least one of query, type, or days is required for search action" };
+      }
+
+      const searchResult = await searchRecords({
+        query: params.query,
+        type: params.type,
+        days: params.days ?? 30,
       });
 
-      return { success: true, data: result };
+      const result: BrainGuardResult = {
+        success: true,
+        results: searchResult.results.map((r) => ({
+          date: r.date,
+          pattern: r.pattern,
+          message: r.message.slice(0, 100),
+          similarity: r.similarity,
+          matchType: r.matchType,
+        })),
+        summary: searchResult.summary,
+      };
+
+      console.log("[brain_guard] Search success");
+      return result;
     }
 
     return { success: false, error: `Unknown action: ${params.action}` };
   } catch (err) {
+    console.error("[brain_guard] Error:", err);
     return { success: false, error: String(err) };
   }
 }

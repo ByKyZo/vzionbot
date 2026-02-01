@@ -7,13 +7,12 @@
     "extensions": ["./index.ts"]
   },
   "dependencies": {
-    "better-sqlite3": "^11.0.0"
+    "openai": "^4.77.0"
   },
   "peerDependencies": {
     "openclaw": ">=2026.1.26"
   },
   "devDependencies": {
-    "openclaw": "workspace:*",
-    "@types/better-sqlite3": "^7.6.11"
+    "openclaw": "workspace:*"
   }
 }

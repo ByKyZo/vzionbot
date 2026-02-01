@@ -1,8 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { brainGuardSchema, handleBrainGuardTool } from "./src/tool.js";
-import { buildBrainGuardPrompt, resetSessionCount } from "./src/prompt.js";
-import { handleBrainCommand } from "./src/command.js";
-import { closeDb } from "./src/storage.js";
+import { buildBrainGuardPrompt, resetSessionCount, setEmbeddingAvailable } from "./src/prompt.js";
+import { closeStorage, checkEmbeddingAvailable } from "./src/storage.js";
 
 const brainGuardPlugin = {
   id: "brain-guard",
@@ -29,7 +28,15 @@ const brainGuardPlugin = {
       return;
     }
 
-    api.logger.info("BrainGuard loaded");
+    // Check embedding availability at startup
+    checkEmbeddingAvailable().then((available) => {
+      setEmbeddingAvailable(available);
+      if (available) {
+        api.logger.info("BrainGuard loaded (embeddings enabled)");
+      } else {
+        api.logger.warn("BrainGuard loaded (embeddings disabled - no API key configured)");
+      }
+    });
 
     // Hook: Inject methodology prompt
     api.on("before_agent_start", async (_event, ctx) => {
@@ -49,19 +56,12 @@ const brainGuardPlugin = {
       description: "Record and query cognitive patterns for BrainGuard",
       parameters: brainGuardSchema,
       execute: async (_toolCallId, args, _signal, ctx) => {
-        const result = handleBrainGuardTool(args, { sessionKey: ctx?.sessionKey });
-        return JSON.stringify(result);
+        const result = await handleBrainGuardTool(args, { sessionKey: ctx?.sessionKey });
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          details: result,
+        };
       },
-    });
-
-    // Command: /brain
-    api.registerCommand({
-      name: "brain",
-      aliases: ["bg"],
-      description: "BrainGuard - cognitive health stats",
-      acceptsArgs: true,
-      requireAuth: true,
-      handler: (ctx) => handleBrainCommand(ctx.args),
     });
 
     // Reset session on end
@@ -71,7 +71,7 @@ const brainGuardPlugin = {
 
     // Cleanup on gateway stop
     api.on("gateway_stop", () => {
-      closeDb();
+      closeStorage();
     });
   },
 };
